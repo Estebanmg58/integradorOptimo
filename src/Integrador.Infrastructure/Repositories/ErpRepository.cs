@@ -14,6 +14,17 @@ public class ErpRepository : IErpRepository
         _connectionString = connectionString;
     }
 
+    public async Task ExecuteProcesoAsync(CancellationToken ct)
+    {
+        using var connection = new SqlConnection(_connectionString);
+        
+        await connection.ExecuteAsync(
+            "Proceso",
+            commandType: CommandType.StoredProcedure,
+            commandTimeout: 300
+        );
+    }
+
     public async Task<List<AsociadoDto>> GetAsociadosAsync(CancellationToken ct)
     {
         using var connection = new SqlConnection(_connectionString);

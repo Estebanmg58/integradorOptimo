@@ -4,6 +4,7 @@ namespace Integrador.Infrastructure.Repositories;
 
 public interface IErpRepository
 {
+    Task ExecuteProcesoAsync(CancellationToken ct);
     Task<List<AsociadoDto>> GetAsociadosAsync(CancellationToken ct);
     Task<List<ProductoDto>> GetProductosAsync(CancellationToken ct);
     Task<List<MovimientoDto>> GetMovimientosAsync(CancellationToken ct);

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Integrador.Core.DTOs;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Integrador.Worker.Services;
 
@@ -12,12 +13,14 @@ public class ApiClientService : IApiClientService
     private readonly string _baseUrl;
     private readonly string _apiKey;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly ILogger<ApiClientService> _logger;
 
-    public ApiClientService(HttpClient httpClient, IConfiguration configuration)
+    public ApiClientService(HttpClient httpClient, IConfiguration configuration, ILogger<ApiClientService> logger)
     {
         _httpClient = httpClient;
         _baseUrl = configuration["ApiSettings:BaseUrl"] ?? throw new ArgumentNullException("ApiSettings:BaseUrl");
         _apiKey = configuration["ApiSettings:ApiKey"] ?? throw new ArgumentNullException("ApiSettings:ApiKey");
+        _logger = logger;
         
         _httpClient.Timeout = TimeSpan.FromMinutes(5);
         _httpClient.DefaultRequestHeaders.Add("X-API-Key", _apiKey);
@@ -66,6 +69,20 @@ public class ApiClientService : IApiClientService
         var content = new StringContent(json, Encoding.UTF8, "application/json");
 
         var response = await _httpClient.PostAsync(url, content, ct);
-        response.EnsureSuccessStatusCode();
+        
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorContent = await response.Content.ReadAsStringAsync(ct);
+            
+            _logger.LogError("? Error en API: {StatusCode} - URL: {Url}", response.StatusCode, url);
+            _logger.LogError("?? Respuesta del servidor: {ErrorContent}", errorContent);
+            _logger.LogError("?? Tamaño del payload: {Size} bytes", json.Length);
+            
+            throw new HttpRequestException(
+                $"API Error: {response.StatusCode} - {errorContent}",
+                null,
+                response.StatusCode
+            );
+        }
     }
 }

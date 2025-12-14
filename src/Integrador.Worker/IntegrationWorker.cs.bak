@@ -2,7 +2,6 @@
 using Integrador.Core.DTOs;
 using Integrador.Infrastructure.Repositories;
 using Integrador.Worker.Services;
-using Microsoft.Extensions.Configuration;
 using NCrontab;
 
 namespace Integrador.Worker;
@@ -11,19 +10,19 @@ public class IntegrationWorker : BackgroundService
 {
     private readonly ILogger<IntegrationWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
-    private readonly IConfiguration _configuration;
     private const int LARGE_DATASET_THRESHOLD = 100000;
     private const int GC_BATCH_INTERVAL = 50;
 
-    public IntegrationWorker(ILogger<IntegrationWorker> logger, IServiceProvider serviceProvider, IConfiguration configuration)
+    public IntegrationWorker(ILogger<IntegrationWorker> logger, IServiceProvider serviceProvider)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
-        _configuration = configuration;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _logger.LogInformation("?? Integrador Óptimo iniciado - Servicio de Windows activo");
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -45,15 +44,7 @@ public class IntegrationWorker : BackgroundService
 
                 if (!stoppingToken.IsCancellationRequested)
                 {
-                    // Verificar si estamos dentro del horario laboral (8 AM - 4 PM)
-                    if (IsWithinBusinessHours(DateTime.Now))
-                    {
-                        await RunIntegrationAsync(stoppingToken);
-                    }
-                    else
-                    {
-                        _logger.LogInformation("⏰ Fuera de horario laboral. Esperando próxima ejecución...");
-                    }
+                    await RunIntegrationAsync(stoppingToken);
                 }
             }
             catch (Exception ex)
@@ -63,15 +54,7 @@ public class IntegrationWorker : BackgroundService
             }
         }
 
-        _logger.LogInformation("⛔ Integrador Óptimo detenido");
-    }
-
-    private bool IsWithinBusinessHours(DateTime currentTime)
-    {
-        var hour = currentTime.Hour;
-        // Horario laboral extendido: 2 AM (nocturno) y 8 AM (08:00) hasta 8 PM (20:00)
-        // La ejecución de las 8 PM (20:00) será la última del día
-        return hour == 2 || (hour >= 8 && hour <= 20);
+        _logger.LogInformation("?? Integrador Óptimo detenido");
     }
 
     private async Task RunIntegrationAsync(CancellationToken ct)
@@ -90,31 +73,6 @@ public class IntegrationWorker : BackgroundService
             var apiClient = scope.ServiceProvider.GetRequiredService<IApiClientService>();
 
             var settings = await settingsRepo.GetSettingsAsync();
-
-            // ?? Ejecutar SP Proceso antes de cualquier sincronización (crítico en producción)
-            var executeProcesoEnabled = _configuration.GetValue<bool>("IntegrationSettings:ExecuteProcesoBeforeSync", true);
-            if (executeProcesoEnabled)
-            {
-                var procesoStopwatch = Stopwatch.StartNew();
-                _logger.LogInformation("??  Ejecutando SP 'Proceso' (actualizaciones internas)...");
-                
-                try
-                {
-                    await erpRepo.ExecuteProcesoAsync(ct);
-                    procesoStopwatch.Stop();
-                    _logger.LogInformation($"   ? SP 'Proceso' completado en {procesoStopwatch.Elapsed.TotalSeconds:F1}s");
-                }
-                catch (Exception ex)
-                {
-                    procesoStopwatch.Stop();
-                    _logger.LogError(ex, $"   ? Error ejecutando SP 'Proceso' después de {procesoStopwatch.Elapsed.TotalSeconds:F1}s");
-                    throw; // No continuar si Proceso falla
-                }
-            }
-            else
-            {
-                _logger.LogWarning("??  SP 'Proceso' deshabilitado (modo desarrollo)");
-            }
 
             if (settings.EnableAsociados)
             {
@@ -227,14 +185,15 @@ public class IntegrationWorker : BackgroundService
             var totalRecords = productos.Count;
             _logger.LogInformation($"   Total productos obtenidos: {totalRecords:N0}");
 
-            // 🔥 Enviar TODOS los productos de una vez (más eficiente para el API)
-            _logger.LogInformation($"   📤 Enviando {totalRecords:N0} productos en un solo lote...");
+            // 🔥 MODO PRUEBA: Enviar TODOS los productos de una vez
+            _logger.LogWarning($"Enviando TODOS los {totalRecords:N0} productos en un solo lote...");
 
             var sendStopwatch = Stopwatch.StartNew();
             await apiClient.SendProductosAsync(productos, isFullLoad, ct);
             sendStopwatch.Stop();
 
-            _logger.LogInformation($"   ✅ {totalRecords:N0} productos enviados en {sendStopwatch.Elapsed.TotalSeconds:F2}s ({(totalRecords / sendStopwatch.Elapsed.TotalSeconds):F0} reg/s)");
+            _logger.LogInformation($"   ✅ {totalRecords:N0} productos enviados en {sendStopwatch.Elapsed.TotalSeconds:F2} segundos ({sendStopwatch.ElapsedMilliseconds:N0}ms)");
+            _logger.LogInformation($"   📊 Performance: {(totalRecords / sendStopwatch.Elapsed.TotalSeconds):F0} registros/segundo");
 
             // Limpieza de memoria
             productos.Clear();
@@ -255,7 +214,7 @@ public class IntegrationWorker : BackgroundService
     private async Task SyncMovimientosAsync(IErpRepository erpRepo, IApiClientService apiClient, int batchSize, CancellationToken ct)
     {
         var stopwatch = Stopwatch.StartNew();
-        _logger.LogInformation("📊 Sincronizando Movimientos...");
+        _logger.LogInformation("?? Sincronizando Movimientos...");
 
         try
         {
@@ -265,15 +224,11 @@ public class IntegrationWorker : BackgroundService
 
             if (totalRecords > LARGE_DATASET_THRESHOLD)
             {
-                _logger.LogWarning($"   ⚠️  Dataset grande detectado ({totalRecords:N0} registros). Activando optimizaciones de memoria.");
+                _logger.LogWarning($"   ??  Dataset grande detectado ({totalRecords:N0} registros). Activando optimizaciones de memoria.");
             }
 
-            // 🔥 IMPORTANTE: Para Movimientos usar batches de 2,000 (independiente del BatchSize configurado)
-            const int MOVIMIENTOS_BATCH_SIZE = 2000;
-            _logger.LogInformation($"   📦 Procesando en lotes de {MOVIMIENTOS_BATCH_SIZE:N0} registros");
-
-            var batches = movimientos.Chunk(MOVIMIENTOS_BATCH_SIZE);
-            var totalBatches = (int)Math.Ceiling((double)totalRecords / MOVIMIENTOS_BATCH_SIZE);
+            var batches = movimientos.Chunk(batchSize);
+            var totalBatches = (int)Math.Ceiling((double)totalRecords / batchSize);
             var batchNumber = 0;
 
             foreach (var batch in batches)
@@ -288,14 +243,13 @@ public class IntegrationWorker : BackgroundService
                 batchStopwatch.Stop();
                 batchNumber++;
 
-                _logger.LogInformation($"   ✅ Batch {batchNumber}/{totalBatches}: {batchList.Count:N0} registros en {batchStopwatch.ElapsedMilliseconds}ms");
+                _logger.LogInformation($"   ? Batch {batchNumber}/{totalBatches}: {batchList.Count} registros en {batchStopwatch.ElapsedMilliseconds}ms");
 
-                // Liberar memoria cada 25 batches para datasets grandes
-                if (totalRecords > LARGE_DATASET_THRESHOLD && batchNumber % 25 == 0)
+                if (totalRecords > LARGE_DATASET_THRESHOLD && batchNumber % GC_BATCH_INTERVAL == 0)
                 {
                     GC.Collect(1, GCCollectionMode.Optimized);
                     GC.WaitForPendingFinalizers();
-                    _logger.LogDebug($"   🧹 Memoria liberada después del batch {batchNumber}");
+                    _logger.LogDebug($"   ?? Memoria liberada después del batch {batchNumber}");
                 }
 
                 batchList.Clear();
@@ -306,16 +260,16 @@ public class IntegrationWorker : BackgroundService
                 movimientos.Clear();
                 GC.Collect(2, GCCollectionMode.Forced);
                 GC.WaitForPendingFinalizers();
-                _logger.LogDebug("   🧹 Limpieza final de memoria completada para Movimientos");
+                _logger.LogDebug("   ?? Limpieza final de memoria completada para Movimientos");
             }
 
             stopwatch.Stop();
-            _logger.LogInformation($"   ✅ Movimientos completados en {stopwatch.Elapsed.TotalSeconds:F1}s");
+            _logger.LogInformation($"   ? Movimientos completados en {stopwatch.Elapsed.TotalSeconds:F1}s");
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            _logger.LogError(ex, $"   ❌ Error sincronizando Movimientos después de {stopwatch.Elapsed.TotalSeconds:F1}s");
+            _logger.LogError(ex, $"   ? Error sincronizando Movimientos después de {stopwatch.Elapsed.TotalSeconds:F1}s");
             throw;
         }
     }

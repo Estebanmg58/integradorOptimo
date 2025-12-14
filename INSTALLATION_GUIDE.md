@@ -395,12 +395,28 @@ Reemplaza los placeholders con tus valores reales:
   },
   "ApiSettings": {
     "BaseUrl": "https://api.fodnosuma.com",
-    "JwtToken": "TU_TOKEN_JWT_REAL_AQUI"
+    "ApiKey": "LlaveAuthApiKey-!@#"  // ?? CAMBIÓ de JwtToken a ApiKey
+  },
+  "IntegrationSettings": {
+    "ExecuteProcesoBeforeSync": true  // ?? CRÍTICO EN PRODUCCIÓN
   },
   "Serilog": {
     "MinimumLevel": {
       "Default": "Information"
-    }
+    },
+    "WriteTo": [
+      {
+        "Name": "File",
+        "Args": {
+          "path": "C:\\Logs\\IntegradorOptimo\\log-.txt",
+          "rollingInterval": "Day",
+          "retainedFileCountLimit": 30
+        }
+      },
+      {
+        "Name": "Console"
+      }
+    ]
   }
 }
 ```
